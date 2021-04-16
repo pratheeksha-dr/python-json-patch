@@ -63,7 +63,7 @@ try:
 
 except ImportError:
     from collections import MutableMapping, MutableSequence
-    str = unicode
+    # str = unicode
 
 # Will be parsed by setup.py to determine package metadata
 __author__ = 'Stefan Kögl <stefan@skoegl.net>'
@@ -241,8 +241,9 @@ class RemoveOperation(PatchOperation):
     def apply(self, obj):
         subobj, part = self.pointer.to_last(obj)
 
-        if isinstance(subobj, Sequence) and not isinstance(part, int):
-            raise JsonPointerException("invalid array index '{0}'".format(part))
+        # SCIM change:
+        # if isinstance(subobj, Sequence) and not isinstance(part, int):
+        #     raise JsonPointerException("invalid array index '{0}'".format(part))
 
         try:
             del subobj[part]
@@ -283,7 +284,9 @@ class AddOperation(PatchOperation):
 
         if isinstance(subobj, MutableSequence):
             if part == '-':
-                subobj.append(value)  # pylint: disable=E1103
+                # SCIM Change: Add elememt only if it is not already present
+                if value not in subobj:
+                    subobj.append(value)  # pylint: disable=E1103
 
             elif part > len(subobj) or part < 0:
                 raise JsonPatchConflict("can't insert outside of list")
@@ -294,6 +297,20 @@ class AddOperation(PatchOperation):
         elif isinstance(subobj, MutableMapping):
             if part is None:
                 obj = value  # we're replacing the root
+            # SCIM Change: if attribute to be added to is a list then append
+            elif isinstance(subobj.get(part), MutableSequence):
+                # if list of values to append
+                if isinstance(value, MutableSequence):
+                    for val in value:
+                        if val not in subobj[part]:
+                            subobj[part].append(val)
+                # if values are sent as key-value pairs
+                elif value not in subobj[part]:
+                    subobj[part].append(value)
+            # SCIM Change: if attribute to be added to is complex(dictionary)
+            elif isinstance(subobj.get(part), MutableMapping):
+                for attr, val in value.items():
+                    subobj[part][attr] = val
             else:
                 subobj[part] = value
 
@@ -343,18 +360,31 @@ class ReplaceOperation(PatchOperation):
             if part >= len(subobj) or part < 0:
                 raise JsonPatchConflict("can't replace outside of list")
 
+            # SCIM Change:
+            if isinstance(subobj[part], MutableMapping):
+                for attr, val in value.items():
+                    subobj[part][attr] = val
+                return obj
+            # SCIM Change:
+            else:
+                subobj[part] = value
+                return obj
+
         elif isinstance(subobj, MutableMapping):
+            # SCIM Change: considered as add operation when attribtue doesn't exist.
             if part not in subobj:
-                msg = "can't replace a non-existent object '{0}'".format(part)
-                raise JsonPatchConflict(msg)
+                subobj[part] = value
+            elif isinstance(value, MutableMapping):
+                for attr, val in value.items():
+                    subobj[part][attr] = val
+            else:
+                subobj[part] = value
+            return obj
         else:
             if part is None:
                 raise TypeError("invalid document type {0}".format(type(subobj)))
             else:
                 raise JsonPatchConflict("unable to fully resolve json pointer {0}, part {1}".format(self.location, part))
-
-        subobj[part] = value
-        return obj
 
     def _on_undo_remove(self, path, key):
         return key
@@ -509,9 +539,6 @@ class JsonPatch(object):
         'remove': RemoveOperation,
         'add': AddOperation,
         'replace': ReplaceOperation,
-        'move': MoveOperation,
-        'test': TestOperation,
-        'copy': CopyOperation,
     })
 
     """A JSON Patch is a list of Patch Operations.
